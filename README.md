@@ -20,7 +20,3 @@ Our approach involves:
 
 - [Playing Super Mario with LLMs as a Benchmark](https://www.reddit.com/r/singularity/comments/1j1pxru/playing_super_mario_with_llms_as_a_benchmark_by)
 - [Claude Plays Pokemon](https://www.twitch.tv/claudeplayspokemon)
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details. 
