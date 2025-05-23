@@ -12,6 +12,10 @@ import gym
 from gym.spaces import Box
 from gym.wrappers import FrameStack
 
+from agent import Mario
+from environment import create_env
+from metrics_logger import MetricLogger
+
 # NES Emulator for OpenAI Gym
 from nes_py.wrappers import JoypadSpace
 
@@ -21,6 +25,7 @@ from gym_super_mario_bros.actions import RIGHT_ONLY, SIMPLE_MOVEMENT, COMPLEX_MO
 
 from tensordict import TensorDict
 from torchrl.data import TensorDictReplayBuffer, LazyMemmapStorage
+
 # Initialize Super Mario environment (in v0.26 change render mode to 'human' to see results on the screen)
 if gym.__version__ < '0.26':
     env = gym_super_mario_bros.make("SuperMarioBros-1-1-v0", new_step_api=True)
