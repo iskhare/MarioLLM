@@ -15,7 +15,7 @@ class Agent:
                  eps_decay=0.99999975, 
                  eps_min=0.1, 
                  replay_buffer_capacity=100_000, 
-                 batch_size=32, 
+                 batch_size=256, 
                  sync_network_rate=10000):
         
         self.num_actions = num_actions
