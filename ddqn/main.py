@@ -1,7 +1,7 @@
 import torch
 
 import gym_super_mario_bros
-from gym_super_mario_bros.actions import RIGHT_ONLY
+from gym_super_mario_bros.actions import RIGHT_ONLY, COMPLEX_MOVEMENT
 
 from agent import Agent
 
@@ -24,10 +24,10 @@ ENV_NAME = 'SuperMarioBros-1-1-v0'
 SHOULD_TRAIN = True
 DISPLAY = True
 CKPT_SAVE_INTERVAL = 5000
-NUM_OF_EPISODES = 50_000
+NUM_OF_EPISODES = 50000
 
 env = gym_super_mario_bros.make(ENV_NAME, render_mode='human' if DISPLAY else 'rgb', apply_api_compatibility=True)
-env = JoypadSpace(env, RIGHT_ONLY)
+env = JoypadSpace(env, COMPLEX_MOVEMENT)
 
 env = apply_wrappers(env)
 
