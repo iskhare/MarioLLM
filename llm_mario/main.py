@@ -20,9 +20,9 @@ def main():
     args = parser.parse_args()
     
     # Check API key
-    api_key = args.api_key or config.ANTHROPIC_API_KEY
+    api_key = args.api_key or config.FIREWORKS_API_KEY
     if not api_key:
-        print("Error: ANTHROPIC_API_KEY must be set as environment variable or passed with --api-key")
+        print("Error: FIREWORKS_API_KEY must be set as environment variable or passed with --api-key")
         sys.exit(1)
     
     # Set up screenshot directory if needed

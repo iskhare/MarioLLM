@@ -1,4 +1,4 @@
-import anthropic
+from fireworks.client import Fireworks
 import json
 import time
 from typing import List, Dict, Any, Optional
@@ -11,13 +11,13 @@ import config
 
 class LLMAgent:
     def __init__(self, api_key: str = None, model: str = None):
-        self.api_key = api_key or config.ANTHROPIC_API_KEY
+        self.api_key = api_key or config.FIREWORKS_API_KEY
         self.model = model or config.DEFAULT_MODEL
         
         if not self.api_key:
-            raise ValueError("ANTHROPIC_API_KEY must be set in environment variables or passed to constructor")
+            raise ValueError("FIREWORKS_API_KEY must be set in environment variables or passed to constructor")
         
-        self.client = anthropic.Anthropic(api_key=self.api_key)
+        self.client = Fireworks(api_key=self.api_key)
         self.memory = deque(maxlen=config.MAX_MEMORY_ITEMS)
         self.screenshot_history = deque(maxlen=config.SCREENSHOT_HISTORY)
         
@@ -96,17 +96,16 @@ Respond with a JSON object containing:
     def choose_action(self, screenshot: str, game_state: Dict[str, Any]) -> int:
         """Choose an action based on the current game state"""
         try:
-            # Build the prompt
+            # Build the messages for OpenAI-compatible format
             messages = [
+                {"role": "system", "content": self.get_system_prompt()},
                 {
                     "role": "user",
                     "content": [
                         {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": screenshot
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{screenshot}"
                             }
                         },
                         {
@@ -123,16 +122,15 @@ Based on the screenshot and game state, choose your next action. Focus on moving
                 }
             ]
 
-            # Make API call
-            response = self.client.messages.create(
+            # Make API call using Fireworks client
+            response = self.client.chat.completions.create(
                 model=self.model,
                 max_tokens=300,
-                system=self.get_system_prompt(),
                 messages=messages
             )
 
-            # Parse response
-            response_text = response.content[0].text
+            # Parse response from Fireworks API
+            response_text = response.choices[0].message.content
             
             # Try to extract JSON from response
             try:

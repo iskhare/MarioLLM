@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 import io
 import base64
+from wrappers import apply_wrappers
 
 
 class MarioEmulator:
@@ -18,6 +19,7 @@ class MarioEmulator:
         )
         
         self.env = JoypadSpace(self.env, SIMPLE_MOVEMENT)
+        self.env = apply_wrappers(self.env)
         
         self.current_state = None
         self.last_info = {}

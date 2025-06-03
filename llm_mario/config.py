@@ -1,8 +1,8 @@
 import os
 
 # API Configuration
-ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
-DEFAULT_MODEL = 'claude-3-haiku-20240307'
+FIREWORKS_API_KEY = os.getenv('FIREWORKS_API_KEY')
+DEFAULT_MODEL = 'accounts/fireworks/models/llama4-scout-instruct-basic'
 
 # Environment Configuration
 ENV_NAME = 'SuperMarioBros-1-1-v3'
@@ -15,7 +15,7 @@ IMAGE_SIZE = (84, 84)
 
 # Agent Configuration
 MAX_MEMORY_ITEMS = 10
-SCREENSHOT_HISTORY = 9
+SCREENSHOT_HISTORY = 10
 INCLUDE_GAME_STATE = True
 
 # Action space mapping for SIMPLE_MOVEMENT
@@ -33,4 +33,4 @@ ACTION_MAPPING = {
 VERBOSE = True
 SAVE_SCREENSHOTS = False
 SCREENSHOT_DIR = 'screenshots'
-SCREENSHOT_EVERY = 10
+SCREENSHOT_EVERY = 30
