@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
 import numpy as np
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from peft import LoraConfig, get_peft_model, TaskType
 import json
 import base64
@@ -13,31 +13,10 @@ from typing import Dict, Any, List, Tuple
 import config
 
 
-class VisionEncoder(nn.Module):
-    """Simple CNN to encode game screenshots"""
-    def __init__(self, output_dim=256):
-        super().__init__()
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2) 
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-        self.fc = nn.Linear(64 * 7 * 7, output_dim)
-        
-    def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = x.view(x.size(0), -1)
-        return F.relu(self.fc(x))
-
-
 class PolicyValueHead(nn.Module):
-    """Policy and value head for the LLM"""
-    def __init__(self, hidden_size, num_actions, vision_dim=256):
+    """Policy and value head for the multimodal LLM"""
+    def __init__(self, hidden_size, num_actions):
         super().__init__()
-        self.vision_encoder = VisionEncoder(vision_dim)
-        
-        # Combine LLM hidden states with vision features
-        self.fusion_layer = nn.Linear(hidden_size + vision_dim, hidden_size)
         
         # Policy head (action probabilities)
         self.policy_head = nn.Sequential(
@@ -53,23 +32,16 @@ class PolicyValueHead(nn.Module):
             nn.Linear(hidden_size // 2, 1)
         )
         
-    def forward(self, hidden_states, vision_input):
-        # Encode vision input
-        vision_features = self.vision_encoder(vision_input)
-        
+    def forward(self, hidden_states):
         # Take the last hidden state from LLM
         if len(hidden_states.shape) == 3:
             llm_features = hidden_states[:, -1, :]  # [batch, hidden_size]
         else:
             llm_features = hidden_states
             
-        # Fuse vision and language features
-        combined_features = torch.cat([llm_features, vision_features], dim=-1)
-        fused_features = F.relu(self.fusion_layer(combined_features))
-        
         # Get policy and value
-        action_logits = self.policy_head(fused_features)
-        state_value = self.value_head(fused_features)
+        action_logits = self.policy_head(llm_features)
+        state_value = self.value_head(llm_features)
         
         return action_logits, state_value.squeeze(-1)
 
@@ -77,17 +49,25 @@ class PolicyValueHead(nn.Module):
 class PPOAgent:
     def __init__(self, model_path: str = None):
         self.device = config.DEVICE
-        self.model_path = model_path or config.LOCAL_MODEL_PATH
+        self.model_path = model_path or config.MODEL_PATH
         
-        # Load tokenizer and model
+        # Load tokenizer, processor, and model
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             
-        self.model = AutoModelForCausalLM.from_pretrained(
+        # Try to load processor for multimodal models
+        try:
+            self.processor = AutoProcessor.from_pretrained(self.model_path)
+        except:
+            self.processor = None
+            print("No processor found, using tokenizer only")
+            
+        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             self.model_path,
-            torch_dtype=torch.float16 if self.device == 'cuda' else torch.float32,
-            device_map='auto' if self.device == 'cuda' else None
+            torch_dtype=torch.bfloat16,
+            device_map='auto',
+            quantization_config=config.QUANT_CONFIG
         )
         
         # Configure LoRA
@@ -138,22 +118,19 @@ Strategy:
 - Jump over enemies and gaps
 - Use running for speed and longer jumps
 - Collect coins when safe
-- Avoid getting stuck"""
+- Avoid getting stuck
+- Complete the level as fast as possible"""
 
-    def preprocess_image(self, image_b64: str) -> torch.Tensor:
-        """Convert base64 image to tensor for vision encoder"""
+    def preprocess_image(self, image_b64: str) -> Image.Image:
+        """Convert base64 image to PIL Image for multimodal model"""
         try:
             image_data = base64.b64decode(image_b64)
             image = Image.open(BytesIO(image_data)).convert('RGB')
-            image = image.resize((84, 84))
-            
-            # Convert to tensor and normalize
-            image_tensor = torch.FloatTensor(np.array(image)).permute(2, 0, 1) / 255.0
-            return image_tensor.unsqueeze(0).to(self.device)
+            return image
         except Exception as e:
             print(f"Error preprocessing image: {e}")
-            # Return dummy tensor
-            return torch.zeros(1, 3, 84, 84).to(self.device)
+            # Return a blank image
+            return Image.new('RGB', (224, 224), color='white')
 
     def format_game_state(self, game_state: Dict[str, Any]) -> str:
         """Format game state for the prompt"""
@@ -173,24 +150,35 @@ Time: {game_state['time']} | World: {game_state['world']}-{game_state['stage']}"
             game_info = self.format_game_state(game_state)
             full_prompt = f"{system_prompt}\n\n{game_info}\n\nChoose action:"
             
-            # Tokenize
-            inputs = self.tokenizer(
-                full_prompt,
-                return_tensors="pt",
-                max_length=config.MAX_LENGTH,
-                truncation=True,
-                padding=True
-            ).to(self.device)
+            # Preprocess image
+            image = self.preprocess_image(screenshot)
+            
+            # Prepare inputs for multimodal model
+            if self.processor is not None:
+                # Use processor for multimodal models
+                inputs = self.processor(
+                    text=full_prompt,
+                    images=image,
+                    return_tensors="pt",
+                    max_length=config.MAX_LENGTH,
+                    truncation=True,
+                ).to(self.device)
+            else:
+                # Fallback to text-only
+                inputs = self.tokenizer(
+                    full_prompt,
+                    return_tensors="pt",
+                    max_length=config.MAX_LENGTH,
+                    truncation=True,
+                    padding=True
+                ).to(self.device)
             
             # Get LLM hidden states
             outputs = self.model(**inputs, output_hidden_states=True)
             hidden_states = outputs.hidden_states[-1]  # Last layer
             
-            # Preprocess image
-            vision_input = self.preprocess_image(screenshot)
-            
             # Get action probabilities and value
-            action_logits, state_value = self.policy_value_head(hidden_states, vision_input)
+            action_logits, state_value = self.policy_value_head(hidden_states)
             
             # Sample action
             action_probs = F.softmax(action_logits, dim=-1)
@@ -275,6 +263,7 @@ Time: {game_state['time']} | World: {game_state['world']}-{game_state['stage']}"
         
         total_loss = 0
         
+        print(f"Training PPO for {config.PPO_EPOCHS} epochs")
         for epoch in range(config.PPO_EPOCHS):
             # Process minibatches
             for i in range(0, len(batch_data), config.PPO_MINIBATCH_SIZE):
@@ -307,23 +296,36 @@ Time: {game_state['time']} | World: {game_state['world']}-{game_state['stage']}"
             game_info = self.format_game_state(state_data['game_state'])
             full_prompt = f"{system_prompt}\n\n{game_info}\n\nChoose action:"
             
-            inputs = self.tokenizer(
-                full_prompt,
-                return_tensors="pt",
-                max_length=config.MAX_LENGTH,
-                truncation=True,
-                padding=True
-            ).to(self.device)
+            # Preprocess image
+            image = self.preprocess_image(state_data['screenshot'])
+            
+            # Prepare inputs for multimodal model
+            if self.processor is not None:
+                # Use processor for multimodal models
+                inputs = self.processor(
+                    text=full_prompt,
+                    images=image,
+                    return_tensors="pt",
+                    max_length=config.MAX_LENGTH,
+                    truncation=True,
+                    padding=True
+                ).to(self.device)
+            else:
+                # Fallback to text-only
+                inputs = self.tokenizer(
+                    full_prompt,
+                    return_tensors="pt",
+                    max_length=config.MAX_LENGTH,
+                    truncation=True,
+                    padding=True
+                ).to(self.device)
             
             # Get LLM hidden states
             outputs = self.model(**inputs, output_hidden_states=True)
             hidden_states = outputs.hidden_states[-1]
             
-            # Process image
-            vision_input = self.preprocess_image(state_data['screenshot'])
-            
             # Get predictions
-            action_logits, state_value = self.policy_value_head(hidden_states, vision_input)
+            action_logits, state_value = self.policy_value_head(hidden_states)
             action_logits_list.append(action_logits)
             values_list.append(state_value)
         

@@ -1,14 +1,17 @@
 import os
 import torch
+from transformers import BitsAndBytesConfig
 
 # Model Configuration
-LOCAL_MODEL_PATH = os.getenv('LOCAL_MODEL_PATH', 'microsoft/DialoGPT-medium')
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-MAX_LENGTH = 512
+MODEL_PATH = 'Qwen/Qwen2.5-VL-3B-Instruct'
+if not torch.cuda.is_available():
+    raise ValueError("CUDA not detected, exiting...")
+DEVICE = 'cuda'
+MAX_LENGTH = 1024
 
 # LoRA Configuration
-LORA_R = 16
-LORA_ALPHA = 32
+LORA_R = 32
+LORA_ALPHA = 64
 LORA_DROPOUT = 0.1
 LORA_TARGET_MODULES = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
@@ -16,16 +19,16 @@ LORA_TARGET_MODULES = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_
 PPO_LEARNING_RATE = 1e-5
 PPO_EPOCHS = 4
 PPO_BATCH_SIZE = 64
-PPO_MINIBATCH_SIZE = 16
+PPO_MINIBATCH_SIZE = 8
 PPO_CLIP_COEF = 0.2
 PPO_GAE_LAMBDA = 0.95
 PPO_GAMMA = 0.99
 PPO_VALUE_COEF = 0.5
 PPO_ENTROPY_COEF = 0.01
-PPO_MAX_GRAD_NORM = 0.5
+MAX_GRAD_NORM = 1.0
 
 # Environment Configuration
-ENV_NAME = 'SuperMarioBros-1-1-v0'
+ENV_NAME = 'SuperMarioBros-1-1-v3'
 RENDER_MODE = 'human'  # Use 'human' for visible display
 
 # Game Settings
@@ -57,10 +60,17 @@ EVALUATION_EPISODES = 5
 
 # Logging
 VERBOSE = True
-SAVE_SCREENSHOTS = False
 SCREENSHOT_DIR = 'screenshots'
 SCREENSHOT_EVERY = 30
-MODEL_SAVE_DIR = 'models'
+SAVE_DIR = 'checkpoints'
 LOG_DIR = 'logs'
 
 REPORT_EVERY = 10
+
+QUANT_CONFIG = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_compute_dtype=torch.bfloat16,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_use_double_quant=True,
+    bnb_4bit_quant_storage=torch.bfloat16,
+)
