@@ -6,40 +6,34 @@ import numpy as np
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from peft import LoraConfig, get_peft_model, TaskType
 import json
-import base64
-from PIL import Image
-from io import BytesIO
 from typing import Dict, Any, List, Tuple
 import config
+from .agent_utils import get_model_inputs
 
 
 class PolicyValueHead(nn.Module):
-    """Policy and value head for the multimodal LLM"""
+    """Add linear layers on top of final hidden state for policy and value networks"""
     def __init__(self, hidden_size, num_actions):
         super().__init__()
-        
-        # Policy head (action probabilities)
+
         self.policy_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(hidden_size // 2, num_actions)
         )
         
-        # Value head (state value estimation)
         self.value_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(hidden_size // 2, 1)
         )
         
     def forward(self, hidden_states):
-        # Take the last hidden state from LLM
         if len(hidden_states.shape) == 3:
-            llm_features = hidden_states[:, -1, :]  # [batch, hidden_size]
+            llm_features = hidden_states[:, -1, :]  # get hidden state for last token
         else:
             llm_features = hidden_states
             
-        # Get policy and value
         action_logits = self.policy_head(llm_features)
         state_value = self.value_head(llm_features)
         
@@ -51,17 +45,7 @@ class PPOAgent:
         self.device = config.DEVICE
         self.model_path = model_path or config.MODEL_PATH
         
-        # Load tokenizer, processor, and model
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-            
-        # Try to load processor for multimodal models
-        try:
-            self.processor = AutoProcessor.from_pretrained(self.model_path)
-        except:
-            self.processor = None
-            print("No processor found, using tokenizer only")
+        self.processor = AutoProcessor.from_pretrained(self.model_path)
             
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             self.model_path,
@@ -70,7 +54,9 @@ class PPOAgent:
             quantization_config=config.QUANT_CONFIG
         )
         
-        # Configure LoRA
+        # Enable gradient checkpointing to save memory
+        self.model.gradient_checkpointing_enable()
+        
         lora_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
             r=config.LORA_R,
@@ -82,111 +68,60 @@ class PPOAgent:
         
         self.model = get_peft_model(self.model, lora_config)
         self.model.to(self.device)
+
+        self.model.print_trainable_parameters()
         
-        # Add policy and value heads
-        hidden_size = self.model.config.hidden_size
         self.policy_value_head = PolicyValueHead(
-            hidden_size=hidden_size,
+            hidden_size=self.model.config.hidden_size,
             num_actions=len(config.ACTION_MAPPING)
-        ).to(self.device)
+        ).to(self.device).to(torch.bfloat16)
         
-        # PPO optimizer
         self.optimizer = torch.optim.AdamW(
             list(self.model.parameters()) + list(self.policy_value_head.parameters()),
             lr=config.PPO_LEARNING_RATE
         )
         
-        # Experience buffer
         self.experience_buffer = []
         self.current_episode_data = []
-        
-    def get_system_prompt(self) -> str:
-        """System prompt for Mario gameplay"""
-        return """You are an AI agent playing Super Mario Bros. Analyze the game state and choose the best action.
-
-Available actions:
-0: NOOP - Do nothing
-1: RIGHT - Move right
-2: RIGHT+JUMP - Move right and jump
-3: RIGHT+RUN - Move right and run
-4: RIGHT+RUN+JUMP - Move right, run and jump (best for long jumps)
-5: JUMP - Jump in place
-6: LEFT - Move left (avoid unless necessary)
-
-Strategy:
-- Always progress right to complete the level
-- Jump over enemies and gaps
-- Use running for speed and longer jumps
-- Collect coins when safe
-- Avoid getting stuck
-- Complete the level as fast as possible"""
-
-    def preprocess_image(self, image_b64: str) -> Image.Image:
-        """Convert base64 image to PIL Image for multimodal model"""
-        try:
-            image_data = base64.b64decode(image_b64)
-            image = Image.open(BytesIO(image_data)).convert('RGB')
-            return image
-        except Exception as e:
-            print(f"Error preprocessing image: {e}")
-            # Return a blank image
-            return Image.new('RGB', (224, 224), color='white')
-
-    def format_game_state(self, game_state: Dict[str, Any]) -> str:
-        """Format game state for the prompt"""
-        return f"""Current State:
-Position: ({game_state['x_pos']}, {game_state['y_pos']})
-Score: {game_state['score']} | Coins: {game_state['coins']} | Lives: {game_state['life']}
-Time: {game_state['time']} | World: {game_state['world']}-{game_state['stage']}"""
 
     def choose_action(self, screenshot: str, game_state: Dict[str, Any]) -> Tuple[int, float, float]:
-        """Choose action using the policy network"""
         self.model.eval()
         self.policy_value_head.eval()
         
+        # Clear cache before action selection
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         with torch.no_grad():
-            # Prepare text input
-            system_prompt = self.get_system_prompt()
-            game_info = self.format_game_state(game_state)
-            full_prompt = f"{system_prompt}\n\n{game_info}\n\nChoose action:"
+            exp = {
+                'game_state': game_state,
+                'screenshot': screenshot
+            }
+            inputs = get_model_inputs(exp, self.processor, config.MAX_LENGTH).to(self.device)
             
-            # Preprocess image
-            image = self.preprocess_image(screenshot)
+            # Get LLM hidden states with memory optimization
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                outputs = self.model(**inputs, output_hidden_states=True, use_cache=False)
+                hidden_states = outputs.hidden_states[-1]  # Last layer
+                
+                # Get action probabilities and value
+                action_logits, state_value = self.policy_value_head(hidden_states)
+                
+                # Sample action
+                action_probs = F.softmax(action_logits, dim=-1)
+                action_dist = Categorical(action_probs)
+                action = action_dist.sample()
+                action_log_prob = action_dist.log_prob(action)
+                
+                result = (action.item(), action_log_prob.item(), state_value.item())
             
-            # Prepare inputs for multimodal model
-            if self.processor is not None:
-                # Use processor for multimodal models
-                inputs = self.processor(
-                    text=full_prompt,
-                    images=image,
-                    return_tensors="pt",
-                    max_length=config.MAX_LENGTH,
-                    truncation=True,
-                ).to(self.device)
-            else:
-                # Fallback to text-only
-                inputs = self.tokenizer(
-                    full_prompt,
-                    return_tensors="pt",
-                    max_length=config.MAX_LENGTH,
-                    truncation=True,
-                    padding=True
-                ).to(self.device)
-            
-            # Get LLM hidden states
-            outputs = self.model(**inputs, output_hidden_states=True)
-            hidden_states = outputs.hidden_states[-1]  # Last layer
-            
-            # Get action probabilities and value
-            action_logits, state_value = self.policy_value_head(hidden_states)
-            
-            # Sample action
-            action_probs = F.softmax(action_logits, dim=-1)
-            action_dist = Categorical(action_probs)
-            action = action_dist.sample()
-            action_log_prob = action_dist.log_prob(action)
-            
-            return action.item(), action_log_prob.item(), state_value.item()
+            # Clean up memory
+            del inputs, outputs, hidden_states, action_logits, state_value
+            del action_probs, action_dist, action, action_log_prob
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+            return result
 
     def store_experience(self, state_data: Dict, action: int, log_prob: float, 
                         value: float, reward: float, done: bool):
@@ -277,61 +212,66 @@ Time: {game_state['time']} | World: {game_state['world']}-{game_state['stage']}"
         return total_loss / (config.PPO_EPOCHS * (len(batch_data) // config.PPO_MINIBATCH_SIZE))
 
     def train_minibatch(self, minibatch: List[Dict]) -> float:
-        """Train on a single minibatch"""
-        # Extract data
-        actions = torch.tensor([exp['action'] for exp in minibatch]).to(self.device)
-        old_log_probs = torch.tensor([exp['log_prob'] for exp in minibatch]).to(self.device)
-        advantages = torch.tensor([exp['advantage'] for exp in minibatch]).to(self.device)
-        returns = torch.tensor([exp['return'] for exp in minibatch]).to(self.device)
+        """Train on a single minibatch with memory optimization"""
+        # Extract data with consistent dtypes
+        actions = torch.tensor([exp['action'] for exp in minibatch], dtype=torch.long).to(self.device)
+        old_log_probs = torch.tensor([exp['log_prob'] for exp in minibatch], dtype=torch.bfloat16).to(self.device)
+        advantages = torch.tensor([exp['advantage'] for exp in minibatch], dtype=torch.bfloat16).to(self.device)
+        returns = torch.tensor([exp['return'] for exp in minibatch], dtype=torch.bfloat16).to(self.device)
         
-        # Process states
+        # Use gradient accumulation to reduce memory usage
+        self.optimizer.zero_grad()
+        total_loss = 0.0
+        accumulation_steps = max(1, len(minibatch) // 2)  # Process 2 samples at a time
+        
         action_logits_list = []
         values_list = []
         
-        for exp in minibatch:
-            state_data = exp['state_data']
+        # Process samples in smaller chunks to manage memory
+        for i in range(0, len(minibatch), accumulation_steps):
+            chunk_end = min(i + accumulation_steps, len(minibatch))
+            chunk = minibatch[i:chunk_end]
+            chunk_actions = actions[i:chunk_end]
             
-            # Prepare inputs
-            system_prompt = self.get_system_prompt()
-            game_info = self.format_game_state(state_data['game_state'])
-            full_prompt = f"{system_prompt}\n\n{game_info}\n\nChoose action:"
+            chunk_logits = []
+            chunk_values = []
             
-            # Preprocess image
-            image = self.preprocess_image(state_data['screenshot'])
+            # Process each sample in chunk
+            for exp in chunk:
+                state_data = exp['state_data']
+                
+                # Clear cache before processing
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
+                inputs = get_model_inputs(state_data, self.processor, config.MAX_LENGTH).to(self.device)
+                
+                # Get LLM hidden states with memory optimization
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                    outputs = self.model(**inputs, output_hidden_states=True, use_cache=False)
+                    hidden_states = outputs.hidden_states[-1]
+                    
+                    action_logits, state_value = self.policy_value_head(hidden_states)
+                    chunk_logits.append(action_logits)
+                    chunk_values.append(state_value)
+                
+                # Clear intermediate variables
+                del inputs, outputs, hidden_states
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             
-            # Prepare inputs for multimodal model
-            if self.processor is not None:
-                # Use processor for multimodal models
-                inputs = self.processor(
-                    text=full_prompt,
-                    images=image,
-                    return_tensors="pt",
-                    max_length=config.MAX_LENGTH,
-                    truncation=True,
-                    padding=True
-                ).to(self.device)
-            else:
-                # Fallback to text-only
-                inputs = self.tokenizer(
-                    full_prompt,
-                    return_tensors="pt",
-                    max_length=config.MAX_LENGTH,
-                    truncation=True,
-                    padding=True
-                ).to(self.device)
+            # Stack chunk tensors
+            chunk_action_logits = torch.stack(chunk_logits)
+            chunk_values_tensor = torch.stack(chunk_values)
             
-            # Get LLM hidden states
-            outputs = self.model(**inputs, output_hidden_states=True)
-            hidden_states = outputs.hidden_states[-1]
+            action_logits_list.extend(chunk_logits)
+            values_list.extend(chunk_values)
             
-            # Get predictions
-            action_logits, state_value = self.policy_value_head(hidden_states)
-            action_logits_list.append(action_logits)
-            values_list.append(state_value)
-        
-        # Stack tensors
+            del chunk_logits, chunk_values, chunk_action_logits, chunk_values_tensor
+            
+        # Stack all tensors
         all_action_logits = torch.stack(action_logits_list)
-        all_values = torch.stack(values_list)
+        all_values = torch.stack(values_list).squeeze(-1)
         
         # Calculate losses
         action_probs = F.softmax(all_action_logits, dim=-1)
@@ -344,7 +284,7 @@ Time: {game_state['time']} | World: {game_state['world']}-{game_state['stage']}"
         surr2 = torch.clamp(ratio, 1 - config.PPO_CLIP_COEF, 1 + config.PPO_CLIP_COEF) * advantages
         policy_loss = -torch.min(surr1, surr2).mean()
         
-        # Value loss
+        # Value loss - ensure consistent shapes
         value_loss = F.mse_loss(all_values, returns)
         
         # Entropy loss
@@ -355,29 +295,31 @@ Time: {game_state['time']} | World: {game_state['world']}-{game_state['stage']}"
                      config.PPO_VALUE_COEF * value_loss + 
                      config.PPO_ENTROPY_COEF * entropy_loss)
         
-        # Backward pass
-        self.optimizer.zero_grad()
+        # Backward pass with gradient scaling
         total_loss.backward()
         torch.nn.utils.clip_grad_norm_(
             list(self.model.parameters()) + list(self.policy_value_head.parameters()),
-            config.PPO_MAX_GRAD_NORM
+            config.MAX_GRAD_NORM
         )
         self.optimizer.step()
         
+        # Clean up
+        del all_action_logits, all_values, action_probs, action_dist
+        del policy_loss, value_loss, entropy_loss, ratio
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         return total_loss.item()
 
-    def save_model(self, path: str):
-        """Save the model and policy head"""
+    def save_model(self, path):
         self.model.save_pretrained(path)
         torch.save(self.policy_value_head.state_dict(), f"{path}/policy_value_head.pt")
         
-    def load_model(self, path: str):
-        """Load the model and policy head"""
+    def load_model(self, path):
         self.model.load_adapter(path)
         self.policy_value_head.load_state_dict(torch.load(f"{path}/policy_value_head.pt"))
 
     def reset_episode(self):
-        """Reset episode-specific data"""
         if self.current_episode_data:
             self.calculate_advantages()
             self.experience_buffer.extend(self.current_episode_data)

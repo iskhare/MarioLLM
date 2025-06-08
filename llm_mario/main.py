@@ -2,27 +2,20 @@
 
 import argparse
 import os
-import sys
 import time
+import wandb
+
 from agent import PPOAgent, MarioEmulator
 import config
-import wandb
 
 
 def main():
     parser = argparse.ArgumentParser(description='PPO Agent playing Super Mario Bros')
-    parser.add_argument('--episodes', type=int, default=1000, help='Number of episodes to run')
-    parser.add_argument('--max-steps', type=int, default=config.MAX_STEPS_PER_EPISODE, help='Max steps per episode')
     parser.add_argument('--display', action='store_true', help='Show the game display')
     parser.add_argument('--save-screenshots', action='store_true', help='Save screenshots')
-    parser.add_argument('--model-path', type=str, default=config.MODEL_PATH, help='Path to HF model')
     parser.add_argument('--load-checkpoint', type=str, help='Path to load trained model checkpoint')
     parser.add_argument('--train', action='store_true', help='Enable training mode')
-    parser.add_argument('--train-every', type=int, default=10, help='Train PPO every N episodes')
-    parser.add_argument('--save-every', type=int, default=100, help='Save model every N episodes')
     parser.add_argument('--wandb', action='store_true', help='Enable wandb logging')
-    parser.add_argument('--wandb-project', type=str, default='cs224r-project', help='Wandb project name')
-    parser.add_argument('--wandb-run-name', type=str, default='llama-ppo', help='Wandb run name')
     
     args = parser.parse_args()
     
@@ -30,12 +23,12 @@ def main():
     use_wandb = args.wandb
     if use_wandb:
         wandb_config = {
-            'episodes': args.episodes,
-            'max_steps': args.max_steps,
-            'model_path': args.model_path,
+            'episodes': config.EPISODES,
+            'max_steps': config.MAX_STEPS_PER_EPISODE,
+            'model_path': config.MODEL_PATH,
             'training_mode': args.train,
-            'train_every': args.train_every,
-            'save_every': args.save_every,
+            'train_every': config.TRAIN_EVERY,
+            'save_every': config.SAVE_MODEL_EVERY,
             'env_name': config.ENV_NAME,
             'device': config.DEVICE,
             'max_steps_per_episode': config.MAX_STEPS_PER_EPISODE,
@@ -44,12 +37,11 @@ def main():
         }
         
         wandb.init(
-            project=args.wandb_project,
-            name=args.wandb_run_name,
-            config=wandb_config,
-            tags=['ppo', 'mario', 'training' if args.train else 'evaluation']
+            project=config.WANDB_PROJECT,
+            name=config.WANDB_RUN_NAME,
+            config=wandb_config
         )
-        print(f"Initialized wandb logging to project: {args.wandb_project}")
+        print(f"Initialized wandb logging to project: {config.WANDB_PROJECT}")
     
     # Set up directories
     if args.save_screenshots:
@@ -61,7 +53,7 @@ def main():
     # Initialize emulator and agent
     render_mode = 'human' if args.display else 'rgb_array'
     emulator = MarioEmulator(config.ENV_NAME, render_mode=render_mode)
-    agent = PPOAgent(model_path=args.model_path)
+    agent = PPOAgent(model_path=config.MODEL_PATH)
     
     # Load checkpoint if specified
     if args.load_checkpoint:
@@ -72,13 +64,13 @@ def main():
             print(f"Warning: Checkpoint not found at {args.load_checkpoint}")
     
     mode = "Training" if args.train else "Evaluation"
-    print(f"Starting PPO Mario Agent in {mode} mode with {args.model_path}")
+    print(f"Starting PPO Mario Agent in {mode} mode with {config.MODEL_PATH}")
     print(f"Device: {config.DEVICE}")
     print(f"Environment: {config.ENV_NAME}")
-    print(f"Episodes: {args.episodes}, Max steps: {args.max_steps}")
+    print(f"Episodes: {config.EPISODES}, Max steps: {config.MAX_STEPS_PER_EPISODE}")
     if args.train:
-        print(f"Training every: {args.train_every} episodes")
-        print(f"Saving every: {args.save_every} episodes")
+        print(f"Training every: {config.TRAIN_EVERY} episodes")
+        print(f"Saving every: {config.SAVE_MODEL_EVERY} episodes")
     print("-" * 50)
     
     total_rewards = []
@@ -86,8 +78,8 @@ def main():
     training_losses = []
     
     try:
-        for episode in range(args.episodes):
-            print(f"\nEpisode {episode + 1}/{args.episodes}")
+        for episode in range(config.EPISODES):
+            print(f"\nEpisode {episode + 1}/{config.EPISODES}")
             
             # Reset environment and agent
             emulator.reset()
@@ -107,7 +99,7 @@ def main():
             max_x_pos = 0
             episode_values = []
             
-            while not done and step_count < args.max_steps:
+            while not done and step_count < config.MAX_STEPS_PER_EPISODE:
                 # Get screenshot and game state
                 screenshot = emulator.get_screenshot(format='base64')
                 game_state = emulator.get_game_state()
@@ -207,7 +199,7 @@ def main():
             print(f"  Status: {'Completed' if done else 'Time limit reached'}")
             
             # Training
-            if args.train and (episode + 1) % args.train_every == 0:
+            if args.train and (episode + 1) % config.TRAIN_EVERY == 0:
                 print(f"\nTraining PPO after episode {episode + 1}...")
                 train_loss = agent.train_ppo()
                 if train_loss is not None:
@@ -224,7 +216,7 @@ def main():
                     print("Not enough experience for training yet")
             
             # Save model checkpoint
-            if args.train and (episode + 1) % args.save_every == 0:
+            if args.train and (episode + 1) % config.SAVE_MODEL_EVERY == 0:
                 checkpoint_path = os.path.join(config.SAVE_DIR, f"checkpoint_episode_{episode + 1}")
                 print(f"Saving checkpoint to {checkpoint_path}")
                 agent.save_model(checkpoint_path)
