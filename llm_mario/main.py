@@ -4,26 +4,20 @@ import argparse
 import os
 import sys
 import time
-from agent import LLMAgent, MarioEmulator
+from agent import PPOAgent, MarioEmulator
 import config
 
 
 def main():
-    parser = argparse.ArgumentParser(description='LLM Agent playing Super Mario Bros')
+    parser = argparse.ArgumentParser(description='PPO Agent playing Super Mario Bros')
     parser.add_argument('--episodes', type=int, default=5, help='Number of episodes to run')
     parser.add_argument('--max-steps', type=int, default=config.MAX_STEPS_PER_EPISODE, help='Max steps per episode')
     parser.add_argument('--display', action='store_true', help='Show the game display')
     parser.add_argument('--save-screenshots', action='store_true', help='Save screenshots')
-    parser.add_argument('--model', type=str, default=config.DEFAULT_MODEL, help='Claude model to use')
-    parser.add_argument('--api-key', type=str, help='Anthropic API key (overrides env var)')
+    parser.add_argument('--model-path', type=str, default=config.LOCAL_MODEL_PATH, help='Path to local model')
+    parser.add_argument('--load-checkpoint', type=str, help='Path to load trained model checkpoint')
     
     args = parser.parse_args()
-    
-    # Check API key
-    api_key = args.api_key or config.FIREWORKS_API_KEY
-    if not api_key:
-        print("Error: FIREWORKS_API_KEY must be set as environment variable or passed with --api-key")
-        sys.exit(1)
     
     # Set up screenshot directory if needed
     if args.save_screenshots:
@@ -32,14 +26,24 @@ def main():
     # Initialize emulator and agent
     render_mode = 'human' if args.display else 'rgb_array'
     emulator = MarioEmulator(config.ENV_NAME, render_mode=render_mode)
-    agent = LLMAgent(api_key=api_key, model=args.model)
+    agent = PPOAgent(model_path=args.model_path)
     
-    print(f"Starting LLM Mario Agent with {args.model}")
+    # Load checkpoint if specified
+    if args.load_checkpoint:
+        if os.path.exists(args.load_checkpoint):
+            agent.load_model(args.load_checkpoint)
+            print(f"Loaded checkpoint from: {args.load_checkpoint}")
+        else:
+            print(f"Warning: Checkpoint not found at {args.load_checkpoint}")
+    
+    print(f"Starting PPO Mario Agent with {args.model_path}")
+    print(f"Device: {config.DEVICE}")
     print(f"Environment: {config.ENV_NAME}")
     print(f"Episodes: {args.episodes}, Max steps: {args.max_steps}")
     print("-" * 50)
     
     total_rewards = []
+    total_distances = []
     
     try:
         for episode in range(args.episodes):
@@ -49,9 +53,14 @@ def main():
             emulator.reset()
             agent.reset_episode()
             
+            # Set to evaluation mode
+            agent.model.eval()
+            agent.policy_value_head.eval()
+            
             episode_reward = 0
             step_count = 0
             done = False
+            max_x_pos = 0
             
             while not done and step_count < args.max_steps:
                 # Get screenshot and game state
@@ -63,15 +72,13 @@ def main():
                     break
                 
                 # Agent chooses action
-                action = agent.choose_action(screenshot, game_state)
+                action, log_prob, value = agent.choose_action(screenshot, game_state)
                 
                 # Take step in environment
                 _, reward, done, truncated, info = emulator.step(action)
                 episode_reward += reward
+                max_x_pos = max(max_x_pos, game_state['x_pos'])
                 step_count += 1
-                
-                # Update agent memory
-                agent.update_memory(reward, done or truncated)
                 
                 # Save screenshot if requested
                 if args.save_screenshots and step_count % config.SCREENSHOT_EVERY == 0:
@@ -84,21 +91,25 @@ def main():
                         screenshot_pil.save(screenshot_path)
                 
                 # Progress reporting
-                if step_count % 50 == 0:
-                    print(f"Step {step_count}: X={game_state['x_pos']}, Score={game_state['score']}, Reward={episode_reward:.1f}")
+                if step_count % config.REPORT_EVERY == 0:
+                    action_name = config.ACTION_MAPPING.get(action, 'Unknown')
+                    print(f"Step {step_count}: Action={action}({action_name}), X={game_state['x_pos']}, "
+                          f"Score={game_state['score']}, Reward={episode_reward:.1f}, Value={value:.3f}")
                 
                 if done or truncated:
                     break
                     
-                # Small delay to avoid rate limiting
-                time.sleep(0.1)
+                # Small delay
+                time.sleep(0.05)
             
             total_rewards.append(episode_reward)
+            total_distances.append(max_x_pos)
             final_state = emulator.get_game_state()
             
             print(f"Episode {episode + 1} completed:")
             print(f"  Steps: {step_count}")
             print(f"  Total reward: {episode_reward:.2f}")
+            print(f"  Max distance: {max_x_pos}")
             print(f"  Final position: {final_state['x_pos']}")
             print(f"  Final score: {final_state['score']}")
             print(f"  Status: {'Completed' if done else 'Time limit reached'}")
@@ -118,6 +129,8 @@ def main():
         print(f"Average reward: {sum(total_rewards)/len(total_rewards):.2f}")
         print(f"Best reward: {max(total_rewards):.2f}")
         print(f"Worst reward: {min(total_rewards):.2f}")
+        print(f"Average distance: {sum(total_distances)/len(total_distances):.2f}")
+        print(f"Best distance: {max(total_distances):.2f}")
 
 
 if __name__ == "__main__":

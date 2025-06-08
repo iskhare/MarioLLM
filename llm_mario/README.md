@@ -1,156 +1,186 @@
-# LLM Mario Agent
+# LLM Mario - PPO with LoRA Finetuning
 
-An AI agent that uses Large Language Models (Claude 3.5 Haiku) to play Super Mario Bros through computer vision and natural language reasoning.
+Train a Large Language Model to play Super Mario Bros using Proximal Policy Optimization (PPO) with LoRA (Low-Rank Adaptation) finetuning.
 
 ## Overview
 
-This project implements an LLM-based agent that:
-- Observes the game state through screenshots
-- Analyzes the visual information using Claude's vision capabilities
-- Makes strategic decisions about Mario's actions
-- Learns from recent performance to improve gameplay
+This project combines:
+- **Large Language Models** for understanding game state and making decisions
+- **Computer Vision** for processing game screenshots
+- **PPO (Proximal Policy Optimization)** for on-policy reinforcement learning
+- **LoRA Finetuning** for efficient model adaptation
+- **Value Function Estimation** for improved learning
 
 ## Features
 
-- **Vision-based gameplay**: Agent analyzes screenshots to understand game state
-- **Natural language reasoning**: Uses Claude's reasoning capabilities for strategic decisions
-- **Memory system**: Tracks recent actions and outcomes for context
-- **Stuck detection**: Identifies when Mario isn't progressing and tries different strategies
-- **Game state tracking**: Monitors position, score, coins, lives, and other metrics
-- **Flexible configuration**: Easy to adjust models, settings, and parameters
+- 🎮 **Mario Environment**: Super Mario Bros 1-1 level
+- 🧠 **LLM + Vision**: Multimodal input processing
+- 🎯 **PPO Training**: On-policy RL with value head
+- 🔧 **LoRA Finetuning**: Memory-efficient adaptation
+- 📊 **Logging**: TensorBoard and Weights & Biases support
+- 💾 **Checkpointing**: Save and resume training
+- 🖥️ **GPU Support**: CUDA acceleration
 
-## Installation
+## Quick Start
 
-1. Clone this repository
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Set up your Anthropic API key:
-   ```bash
-   export ANTHROPIC_API_KEY=your_api_key_here
-   ```
-
-## Usage
-
-### Basic Usage
+### 1. Setup Environment
 ```bash
-python main.py
+# Install dependencies
+pip install -r requirements.txt
+
+# Run setup script
+python setup_ppo.py
 ```
 
-### Advanced Options
+### 2. Start Training
 ```bash
-python main.py --episodes 10 --max-steps 2000 --display --save-screenshots
+# Train with display
+python train_ppo.py --max-episodes 100 --display
+
+# Train with logging
+python train_ppo.py --max-episodes 1000 --use-wandb
+
+# Train with custom model
+python train_ppo.py --model-path "gpt2-medium" --max-episodes 500
 ```
 
-### Command Line Arguments
-- `--episodes`: Number of episodes to run (default: 5)
-- `--max-steps`: Maximum steps per episode (default: 1000)
-- `--display`: Show the game window while playing
-- `--save-screenshots`: Save periodic screenshots to disk
-- `--model`: Claude model to use (default: claude-3-5-haiku-20241022)
-- `--api-key`: Anthropic API key (overrides environment variable)
+### 3. Run Inference
+```bash
+# Run with trained model
+python main.py --episodes 5 --display --load-checkpoint models/ppo_mario_final
+
+# Evaluate performance
+python main.py --episodes 20 --load-checkpoint models/ppo_mario_ep_500
+```
 
 ## Configuration
 
-Edit `config.py` to customize:
-- API settings and model selection
-- Game parameters and action mappings
-- Memory and screenshot settings
-- Logging and debugging options
+Key parameters in `config.py`:
 
-## Project Structure
+### Model Settings
+- `LOCAL_MODEL_PATH`: Base model to use (default: "microsoft/DialoGPT-medium")
+- `DEVICE`: Training device (auto-detected)
+- `MAX_LENGTH`: Maximum sequence length
 
+### LoRA Settings
+- `LORA_R`: Rank of adaptation (default: 16)
+- `LORA_ALPHA`: Scaling parameter (default: 32)
+- `LORA_DROPOUT`: Dropout rate (default: 0.1)
+
+### PPO Settings
+- `PPO_LEARNING_RATE`: Learning rate (default: 1e-5)
+- `PPO_BATCH_SIZE`: Batch size (default: 64)
+- `PPO_CLIP_COEF`: Clipping coefficient (default: 0.2)
+- `PPO_GAMMA`: Discount factor (default: 0.99)
+
+## Architecture
+
+### PPO Agent
 ```
-llm_mario/
-├── agent/
-│   ├── __init__.py          # Package exports
-│   ├── llm_agent.py         # Main LLM agent implementation
-│   └── emulator.py          # Mario environment wrapper
-├── config.py                # Configuration settings
-├── main.py                  # Main execution script
-├── requirements.txt         # Dependencies
-└── README.md               # This file
+LLM Backbone (with LoRA)
+    ↓
+Hidden States
+    ↓
+Vision Encoder ← Game Screenshot
+    ↓
+Feature Fusion
+    ↓
+Policy Head → Action Probabilities
+Value Head → State Value
 ```
 
-## How It Works
-
-1. **Environment Setup**: Creates Super Mario Bros environment using `gym_super_mario_bros`
-2. **Screenshot Capture**: Takes RGB screenshots of the current game state
-3. **LLM Analysis**: Sends screenshot and game data to Claude for analysis
-4. **Action Selection**: Claude responds with chosen action and reasoning
-5. **Game Execution**: Action is executed in the Mario environment
-6. **Memory Update**: Results are stored for future context
+### Training Loop
+1. **Collect Experience**: Agent plays Mario, stores (state, action, reward, value)
+2. **Calculate Advantages**: Use GAE (Generalized Advantage Estimation)
+3. **PPO Update**: Update policy and value networks
+4. **Repeat**: Continue until convergence
 
 ## Action Space
 
-The agent can choose from these actions:
+The agent can choose from 7 actions:
 - `0`: NOOP (do nothing)
-- `1`: Move right
-- `2`: Move right + jump
-- `3`: Move right + run
-- `4`: Move right + run + jump
-- `5`: Jump in place
-- `6`: Move left
+- `1`: RIGHT (move right)
+- `2`: RIGHT + JUMP (move right and jump)
+- `3`: RIGHT + RUN (move right and run)
+- `4`: RIGHT + RUN + JUMP (move right, run and jump)
+- `5`: JUMP (jump in place)
+- `6`: LEFT (move left)
 
-## Performance Tracking
+## Monitoring
 
-The agent tracks:
-- Episode rewards and scores
-- Mario's position progression
-- Completion rates and survival time
-- Action patterns and effectiveness
+### TensorBoard
+```bash
+tensorboard --logdir logs
+```
 
-## Comparison to Similar Projects
+### Weights & Biases
+```bash
+python train_ppo.py --use-wandb
+```
 
-### vs. Claude Plays Pokemon
-- **Similarities**: Both use Claude's vision capabilities for gameplay
-- **Differences**: 
-  - Mario has different action space and objectives
-  - Mario requires real-time positioning awareness
-  - Different memory reading approaches (Pokemon uses ROM memory, Mario uses gym info)
+## Model Checkpoints
 
-### vs. DDQN Implementation
-- **Similarities**: Same environment and action space
-- **Differences**:
-  - LLM uses reasoning vs. learned neural network policies
-  - No training required, immediate deployment
-  - Interpretable decision making process
+Models are saved in `models/` directory:
+- `ppo_mario_ep_N/`: Checkpoint after N episodes
+- `ppo_mario_final/`: Final trained model
 
-## Extending the Project
+## Hardware Requirements
 
-### Custom Strategies
-- Modify the system prompt in `llm_agent.py`
-- Add specialized game state analysis
-- Implement level-specific strategies
+### Minimum
+- CPU: Multi-core processor
+- RAM: 8GB
+- Storage: 5GB free space
 
-### Different Models
-- Change `DEFAULT_MODEL` in config.py
-- Experiment with different Claude models
-- Compare performance across model versions
+### Recommended
+- GPU: NVIDIA RTX 3060 or better
+- RAM: 16GB
+- Storage: 10GB free space
 
-### Enhanced Memory
-- Extend memory system for longer context
-- Add screenshot history analysis
-- Implement performance-based learning
+## Training Tips
+
+1. **Start Small**: Begin with shorter episodes to debug
+2. **Monitor Progress**: Use TensorBoard to track learning
+3. **Adjust Hyperparameters**: Tune learning rate and batch size
+4. **Use GPU**: Training on CPU is very slow
+5. **Save Frequently**: Use checkpointing to resume training
 
 ## Troubleshooting
 
 ### Common Issues
-1. **API Key Error**: Ensure `ANTHROPIC_API_KEY` is set correctly
-2. **Environment Issues**: Check that gym_super_mario_bros is installed properly
-3. **Rate Limiting**: Increase delay between API calls if needed
-4. **Display Issues**: Use `--display` flag for debugging visual problems
 
-### Performance Tips
-- Use `claude-3-5-haiku` for faster, cheaper gameplay
-- Adjust `MAX_STEPS_PER_EPISODE` based on your goals
-- Enable verbose logging for debugging
+**Out of Memory Error**
+```bash
+# Reduce batch size
+PPO_BATCH_SIZE = 32  # in config.py
+```
 
-## Future Improvements
+**Slow Training**
+```bash
+# Check GPU usage
+nvidia-smi
+```
 
-- **Multi-level support**: Extend to different Mario levels
-- **Advanced memory**: Implement more sophisticated context management
-- **Performance metrics**: Add detailed analytics and visualization
-- **Real-time optimization**: Adaptive strategy based on performance
-- **Model comparison**: Framework for testing different LLMs 
+**Model Not Learning**
+```bash
+# Reduce learning rate
+PPO_LEARNING_RATE = 5e-6  # in config.py
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
+
+## License
+
+This project is licensed under the MIT License.
+
+## Acknowledgments
+
+- OpenAI for the Gym environment
+- Hugging Face for the Transformers library
+- Microsoft for the LoRA implementation
+- The Mario AI community for inspiration 
