@@ -6,7 +6,7 @@ MODEL_PATH = 'Qwen/Qwen2.5-VL-3B-Instruct'
 if not torch.cuda.is_available():
     raise ValueError("CUDA not detected, exiting...")
 DEVICE = 'cuda'
-MAX_LENGTH = 2048
+MAX_LENGTH = 8192
 
 # LoRA Configuration
 LORA_R = 16
@@ -15,10 +15,10 @@ LORA_DROPOUT = 0.1
 LORA_TARGET_MODULES = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 # PPO Configuration
-PPO_LEARNING_RATE = 1e-5
+PPO_LEARNING_RATE = 1e-4
 PPO_EPOCHS = 4
-PPO_BATCH_SIZE = 16
-PPO_MINIBATCH_SIZE = 8
+PPO_BATCH_SIZE = 128
+PPO_MINIBATCH_SIZE = 32
 PPO_CLIP_COEF = 0.2
 PPO_GAE_LAMBDA = 0.95
 PPO_GAMMA = 0.99
@@ -31,8 +31,8 @@ ENV_NAME = 'SuperMarioBros-1-1-v3'
 RENDER_MODE = 'human'
 
 # Game Settings
-EPISODES = 1000
-MAX_STEPS_PER_EPISODE = 500
+EPISODES = 10000
+MAX_STEPS_PER_EPISODE = 1200
 FRAME_SKIP = 4
 IMAGE_SIZE = (84, 84)
 
@@ -54,8 +54,8 @@ ACTION_MAPPING = {
 }
 
 # Training Configuration
-TRAIN_EVERY = 5
-SAVE_MODEL_EVERY = 100
+TRAIN_EVERY = 3
+SAVE_MODEL_EVERY = 50
 
 # Logging
 VERBOSE = True

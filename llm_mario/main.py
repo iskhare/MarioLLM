@@ -150,7 +150,7 @@ def main():
                     if screenshot_pil:
                         screenshot_path = os.path.join(
                             config.SCREENSHOT_DIR, 
-                            f"episode_{episode+1}_step_{step_count}.png"
+                            f"step_{step_count}.png"
                         )
                         screenshot_pil.save(screenshot_path)
                         
@@ -168,9 +168,6 @@ def main():
                 
                 if done or truncated:
                     break
-                    
-                # Small delay
-                time.sleep(0.05)
             
             total_rewards.append(episode_reward)
             total_distances.append(max_x_pos)

@@ -3,9 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
 import numpy as np
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoProcessor, Qwen2_5_VLForConditionalGeneration
-from peft import LoraConfig, get_peft_model, TaskType
-import json
+from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 from typing import Dict, Any, List, Tuple
 import config
 from .agent_utils import get_model_inputs
@@ -54,7 +53,8 @@ class PPOAgent:
             quantization_config=config.QUANT_CONFIG
         )
         
-        # Enable gradient checkpointing to save memory
+        self.model = prepare_model_for_kbit_training(self.model)
+
         self.model.gradient_checkpointing_enable()
         
         lora_config = LoraConfig(
@@ -77,7 +77,8 @@ class PPOAgent:
         ).to(self.device).to(torch.bfloat16)
         
         self.optimizer = torch.optim.AdamW(
-            list(self.model.parameters()) + list(self.policy_value_head.parameters()),
+            [p for p in self.model.parameters() if p.requires_grad]
+            + list(self.policy_value_head.parameters()),
             lr=config.PPO_LEARNING_RATE
         )
         
@@ -92,7 +93,7 @@ class PPOAgent:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
-        with torch.no_grad():
+        with torch.inference_mode():
             exp = {
                 'game_state': game_state,
                 'screenshot': screenshot
@@ -108,18 +109,11 @@ class PPOAgent:
                 action_logits, state_value = self.policy_value_head(hidden_states)
                 
                 # Sample action
-                action_probs = F.softmax(action_logits, dim=-1)
-                action_dist = Categorical(action_probs)
+                action_dist = Categorical(logits=action_logits)
                 action = action_dist.sample()
                 action_log_prob = action_dist.log_prob(action)
                 
                 result = (action.item(), action_log_prob.item(), state_value.item())
-            
-            # Clean up memory
-            del inputs, outputs, hidden_states, action_logits, state_value
-            del action_probs, action_dist, action, action_log_prob
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
                 
             return result
 
@@ -212,70 +206,38 @@ class PPOAgent:
         return total_loss / (config.PPO_EPOCHS * (len(batch_data) // config.PPO_MINIBATCH_SIZE))
 
     def train_minibatch(self, minibatch: List[Dict]) -> float:
-        """Train on a single minibatch with memory optimization"""
+        """Train on a single minibatch"""
         # Extract data with consistent dtypes
         actions = torch.tensor([exp['action'] for exp in minibatch], dtype=torch.long).to(self.device)
         old_log_probs = torch.tensor([exp['log_prob'] for exp in minibatch], dtype=torch.bfloat16).to(self.device)
         advantages = torch.tensor([exp['advantage'] for exp in minibatch], dtype=torch.bfloat16).to(self.device)
         returns = torch.tensor([exp['return'] for exp in minibatch], dtype=torch.bfloat16).to(self.device)
         
-        # Use gradient accumulation to reduce memory usage
         self.optimizer.zero_grad()
-        total_loss = 0.0
-        accumulation_steps = max(1, len(minibatch) // 2)  # Process 2 samples at a time
         
         action_logits_list = []
         values_list = []
         
-        # Process samples in smaller chunks to manage memory
-        for i in range(0, len(minibatch), accumulation_steps):
-            chunk_end = min(i + accumulation_steps, len(minibatch))
-            chunk = minibatch[i:chunk_end]
-            chunk_actions = actions[i:chunk_end]
+        # Process each sample in the minibatch
+        for exp in minibatch:
+            state_data = exp['state_data']
             
-            chunk_logits = []
-            chunk_values = []
+            inputs = get_model_inputs(state_data, self.processor, config.MAX_LENGTH).to(self.device)
             
-            # Process each sample in chunk
-            for exp in chunk:
-                state_data = exp['state_data']
+            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                outputs = self.model(**inputs, output_hidden_states=True, use_cache=False)
+                hidden_states = outputs.hidden_states[-1]
                 
-                # Clear cache before processing
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                
-                inputs = get_model_inputs(state_data, self.processor, config.MAX_LENGTH).to(self.device)
-                
-                # Get LLM hidden states with memory optimization
-                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                    outputs = self.model(**inputs, output_hidden_states=True, use_cache=False)
-                    hidden_states = outputs.hidden_states[-1]
-                    
-                    action_logits, state_value = self.policy_value_head(hidden_states)
-                    chunk_logits.append(action_logits)
-                    chunk_values.append(state_value)
-                
-                # Clear intermediate variables
-                del inputs, outputs, hidden_states
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            
-            # Stack chunk tensors
-            chunk_action_logits = torch.stack(chunk_logits)
-            chunk_values_tensor = torch.stack(chunk_values)
-            
-            action_logits_list.extend(chunk_logits)
-            values_list.extend(chunk_values)
-            
-            del chunk_logits, chunk_values, chunk_action_logits, chunk_values_tensor
-            
+                action_logits, state_value = self.policy_value_head(hidden_states)
+                action_logits_list.append(action_logits)
+                values_list.append(state_value)
+        
         # Stack all tensors
-        all_action_logits = torch.stack(action_logits_list)
+        all_action_logits = torch.stack(action_logits_list).squeeze(1)
         all_values = torch.stack(values_list).squeeze(-1)
         
         # Calculate losses
-        action_probs = F.softmax(all_action_logits, dim=-1)
-        action_dist = Categorical(action_probs)
+        action_dist = Categorical(logits=all_action_logits)
         new_log_probs = action_dist.log_prob(actions)
         
         # PPO policy loss
@@ -284,7 +246,7 @@ class PPOAgent:
         surr2 = torch.clamp(ratio, 1 - config.PPO_CLIP_COEF, 1 + config.PPO_CLIP_COEF) * advantages
         policy_loss = -torch.min(surr1, surr2).mean()
         
-        # Value loss - ensure consistent shapes
+        # Value loss
         value_loss = F.mse_loss(all_values, returns)
         
         # Entropy loss
@@ -297,17 +259,12 @@ class PPOAgent:
         
         # Backward pass with gradient scaling
         total_loss.backward()
+        
         torch.nn.utils.clip_grad_norm_(
             list(self.model.parameters()) + list(self.policy_value_head.parameters()),
             config.MAX_GRAD_NORM
         )
         self.optimizer.step()
-        
-        # Clean up
-        del all_action_logits, all_values, action_probs, action_dist
-        del policy_loss, value_loss, entropy_loss, ratio
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
         
         return total_loss.item()
 
@@ -316,7 +273,7 @@ class PPOAgent:
         torch.save(self.policy_value_head.state_dict(), f"{path}/policy_value_head.pt")
         
     def load_model(self, path):
-        self.model.load_adapter(path)
+        self.model.load_adapter(path, adapter_name='default')
         self.policy_value_head.load_state_dict(torch.load(f"{path}/policy_value_head.pt"))
 
     def reset_episode(self):
