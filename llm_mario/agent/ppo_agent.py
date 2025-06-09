@@ -76,11 +76,9 @@ class PPOAgent:
             num_actions=len(config.ACTION_MAPPING)
         ).to(self.device).to(torch.bfloat16)
         
-        self.optimizer = torch.optim.AdamW(
-            [p for p in self.model.parameters() if p.requires_grad]
-            + list(self.policy_value_head.parameters()),
-            lr=config.PPO_LEARNING_RATE
-        )
+        self.trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+        self.trainable_params.extend(list(self.policy_value_head.parameters()))
+        self.optimizer = torch.optim.AdamW(self.trainable_params, lr=config.PPO_LEARNING_RATE)
         
         self.experience_buffer = []
         self.current_episode_data = []
@@ -89,10 +87,6 @@ class PPOAgent:
         self.model.eval()
         self.policy_value_head.eval()
         
-        # Clear cache before action selection
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
         with torch.inference_mode():
             exp = {
                 'game_state': game_state,
@@ -100,15 +94,12 @@ class PPOAgent:
             }
             inputs = get_model_inputs(exp, self.processor, config.MAX_LENGTH).to(self.device)
             
-            # Get LLM hidden states with memory optimization
             with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                 outputs = self.model(**inputs, output_hidden_states=True, use_cache=False)
-                hidden_states = outputs.hidden_states[-1]  # Last layer
+                hidden_states = outputs.hidden_states[-1]
                 
-                # Get action probabilities and value
                 action_logits, state_value = self.policy_value_head(hidden_states)
                 
-                # Sample action
                 action_dist = Categorical(logits=action_logits)
                 action = action_dist.sample()
                 action_log_prob = action_dist.log_prob(action)
@@ -131,12 +122,10 @@ class PPOAgent:
         self.current_episode_data.append(experience)
         
         if done:
-            # Calculate advantages and returns
             self.calculate_advantages()
             self.experience_buffer.extend(self.current_episode_data)
             self.current_episode_data = []
             
-            # Keep buffer size manageable
             if len(self.experience_buffer) > config.REPLAY_BUFFER_SIZE:
                 self.experience_buffer = self.experience_buffer[-config.REPLAY_BUFFER_SIZE:]
 
@@ -148,7 +137,6 @@ class PPOAgent:
         rewards = [exp['reward'] for exp in self.current_episode_data]
         values = [exp['value'] for exp in self.current_episode_data]
         
-        # Calculate returns and advantages using GAE
         advantages = []
         returns = []
         gae = 0
@@ -165,11 +153,9 @@ class PPOAgent:
             advantages.insert(0, gae)
             returns.insert(0, gae + values[i])
         
-        # Normalize advantages
         advantages = np.array(advantages)
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         
-        # Store in experience data
         for i, exp in enumerate(self.current_episode_data):
             exp['advantage'] = advantages[i]
             exp['return'] = returns[i]
@@ -182,7 +168,6 @@ class PPOAgent:
         self.model.train()
         self.policy_value_head.train()
         
-        # Sample batch
         batch_indices = np.random.choice(
             len(self.experience_buffer), 
             size=config.PPO_BATCH_SIZE, 
@@ -194,7 +179,6 @@ class PPOAgent:
         
         print(f"Training PPO for {config.PPO_EPOCHS} epochs")
         for epoch in range(config.PPO_EPOCHS):
-            # Process minibatches
             for i in range(0, len(batch_data), config.PPO_MINIBATCH_SIZE):
                 minibatch = batch_data[i:i+config.PPO_MINIBATCH_SIZE]
                 if len(minibatch) < config.PPO_MINIBATCH_SIZE:
@@ -221,37 +205,27 @@ class PPOAgent:
             outputs = self.model(**inputs, output_hidden_states=True, use_cache=False)
             hidden_states = outputs.hidden_states[-1]
             
-            # Get action logits and values for all samples
             action_logits, state_values = self.policy_value_head(hidden_states)
         
-        # Calculate losses
         action_dist = Categorical(logits=action_logits)
         new_log_probs = action_dist.log_prob(actions)
         
-        # PPO policy loss
         ratio = torch.exp(new_log_probs - old_log_probs)
-        surr1 = ratio * advantages
-        surr2 = torch.clamp(ratio, 1 - config.PPO_CLIP_COEF, 1 + config.PPO_CLIP_COEF) * advantages
-        policy_loss = -torch.min(surr1, surr2).mean()
+        loss1 = ratio * advantages
+        loss2 = torch.clamp(ratio, 1 - config.PPO_CLIP_COEF, 1 + config.PPO_CLIP_COEF) * advantages
+        policy_loss = -torch.min(loss1, loss2).mean()
         
-        # Value loss
         value_loss = F.mse_loss(state_values, returns)
         
-        # Entropy loss
         entropy_loss = -action_dist.entropy().mean()
         
-        # Total loss
         total_loss = (policy_loss + 
                      config.PPO_VALUE_COEF * value_loss + 
                      config.PPO_ENTROPY_COEF * entropy_loss)
         
-        # Backward pass with gradient scaling
         total_loss.backward()
         
-        torch.nn.utils.clip_grad_norm_(
-            list(self.model.parameters()) + list(self.policy_value_head.parameters()),
-            config.MAX_GRAD_NORM
-        )
+        torch.nn.utils.clip_grad_norm_(self.trainable_params, config.MAX_GRAD_NORM)
         self.optimizer.step()
         
         return total_loss.item()
