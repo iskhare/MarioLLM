@@ -7,7 +7,7 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 from typing import Dict, Any, List, Tuple
 import config
-from .agent_utils import get_model_inputs
+from .agent_utils import get_model_inputs, get_model_inputs_batch
 
 
 class PolicyValueHead(nn.Module):
@@ -215,29 +215,21 @@ class PPOAgent:
         
         self.optimizer.zero_grad()
         
-        action_logits_list = []
-        values_list = []
+        # Extract state data for batched processing
+        state_data_list = [exp['state_data'] for exp in minibatch]
         
-        # Process each sample in the minibatch
-        for exp in minibatch:
-            state_data = exp['state_data']
-            
-            inputs = get_model_inputs(state_data, self.processor, config.MAX_LENGTH).to(self.device)
-            
-            with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-                outputs = self.model(**inputs, output_hidden_states=True, use_cache=False)
-                hidden_states = outputs.hidden_states[-1]
-                
-                action_logits, state_value = self.policy_value_head(hidden_states)
-                action_logits_list.append(action_logits)
-                values_list.append(state_value)
+        # Process entire minibatch in single forward pass
+        inputs = get_model_inputs_batch(state_data_list, self.processor, config.MAX_LENGTH).to(self.device)
         
-        # Stack all tensors
-        all_action_logits = torch.stack(action_logits_list).squeeze(1)
-        all_values = torch.stack(values_list).squeeze(-1)
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            outputs = self.model(**inputs, output_hidden_states=True, use_cache=False)
+            hidden_states = outputs.hidden_states[-1]
+            
+            # Get action logits and values for all samples
+            action_logits, state_values = self.policy_value_head(hidden_states)
         
         # Calculate losses
-        action_dist = Categorical(logits=all_action_logits)
+        action_dist = Categorical(logits=action_logits)
         new_log_probs = action_dist.log_prob(actions)
         
         # PPO policy loss
@@ -247,7 +239,7 @@ class PPOAgent:
         policy_loss = -torch.min(surr1, surr2).mean()
         
         # Value loss
-        value_loss = F.mse_loss(all_values, returns)
+        value_loss = F.mse_loss(state_values, returns)
         
         # Entropy loss
         entropy_loss = -action_dist.entropy().mean()

@@ -64,3 +64,47 @@ Time: {game_state['time']} | World: {game_state['world']}-{game_state['stage']}"
         truncation=True,
         padding=True
     )
+
+
+def get_model_inputs_batch(state_data_list, processor, max_length):
+    """Turn multiple game states into a batched model-readable format"""
+    texts = []
+    images = []
+    
+    for state_data in state_data_list:
+        game_state = state_data['game_state']
+        game_info = f"""Current State:
+Position: ({game_state['x_pos']}, {game_state['y_pos']})
+Score: {game_state['score']} | Coins: {game_state['coins']} | Lives: {game_state['life']}
+Time: {game_state['time']} | World: {game_state['world']}-{game_state['stage']}"""
+        
+        full_prompt = f"{SYSTEM_PROMPT}\n\n{game_info}\n\nChoose action:"
+        
+        # Preprocess image
+        image = preprocess_image(state_data['screenshot'])
+        images.append(image)
+        
+        # Use Qwen2.5-VL chat template format
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": full_prompt}
+                ]
+            }
+        ]
+        
+        # Apply chat template
+        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        texts.append(text)
+    
+    # Process all inputs as a batch
+    return processor(
+        text=texts,
+        images=images,
+        return_tensors="pt",
+        max_length=max_length,
+        truncation=True,
+        padding=True
+    )
