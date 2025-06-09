@@ -12,7 +12,7 @@ LORA_ALPHA = 32
 LORA_DROPOUT = 0.1
 LORA_TARGET_MODULES = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
-PPO_LEARNING_RATE = 3e-5
+PPO_LEARNING_RATE = 1e-5
 PPO_EPOCHS = 4
 PPO_BATCH_SIZE = 128
 PPO_MINIBATCH_SIZE = 32
