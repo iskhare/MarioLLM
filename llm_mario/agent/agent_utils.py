@@ -30,7 +30,7 @@ def preprocess_image(image_b64: str) -> Image.Image:
 
 
 def get_model_inputs(state_data, processor, max_length):
-    """Turn the game state into a model-readable format"""
+    """Turn game state and screenshot into model input"""
     game_state = state_data['game_state']
     game_info = f"""Current State:
 Position: ({game_state['x_pos']}, {game_state['y_pos']})

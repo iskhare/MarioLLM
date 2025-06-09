@@ -207,7 +207,6 @@ class PPOAgent:
 
     def train_minibatch(self, minibatch: List[Dict]) -> float:
         """Train on a single minibatch"""
-        # Extract data with consistent dtypes
         actions = torch.tensor([exp['action'] for exp in minibatch], dtype=torch.long).to(self.device)
         old_log_probs = torch.tensor([exp['log_prob'] for exp in minibatch], dtype=torch.bfloat16).to(self.device)
         advantages = torch.tensor([exp['advantage'] for exp in minibatch], dtype=torch.bfloat16).to(self.device)
@@ -215,10 +214,7 @@ class PPOAgent:
         
         self.optimizer.zero_grad()
         
-        # Extract state data for batched processing
         state_data_list = [exp['state_data'] for exp in minibatch]
-        
-        # Process entire minibatch in single forward pass
         inputs = get_model_inputs_batch(state_data_list, self.processor, config.MAX_LENGTH).to(self.device)
         
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):

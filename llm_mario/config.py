@@ -15,14 +15,14 @@ LORA_DROPOUT = 0.1
 LORA_TARGET_MODULES = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 # PPO Configuration
-PPO_LEARNING_RATE = 1e-5
+PPO_LEARNING_RATE = 3e-5
 PPO_EPOCHS = 4
 PPO_BATCH_SIZE = 128
 PPO_MINIBATCH_SIZE = 32
 PPO_CLIP_COEF = 0.2
 PPO_GAE_LAMBDA = 0.95
 PPO_GAMMA = 0.99
-PPO_VALUE_COEF = 0.5
+PPO_VALUE_COEF = 0.1
 PPO_ENTROPY_COEF = 0.01
 MAX_GRAD_NORM = 1.0
 

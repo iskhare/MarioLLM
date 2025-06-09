@@ -19,7 +19,7 @@ def main():
     
     args = parser.parse_args()
     
-    # Initialize wandb if requested and available
+    # Initialize wandb
     use_wandb = args.wandb
     if use_wandb:
         wandb_config = {
@@ -81,17 +81,8 @@ def main():
         for episode in range(config.EPISODES):
             print(f"\nEpisode {episode + 1}/{config.EPISODES}")
             
-            # Reset environment and agent
             emulator.reset()
             agent.reset_episode()
-            
-            # Set model mode
-            if args.train:
-                agent.model.train()
-                agent.policy_value_head.train()
-            else:
-                agent.model.eval()
-                agent.policy_value_head.eval()
             
             episode_reward = 0
             step_count = 0
@@ -100,7 +91,6 @@ def main():
             episode_values = []
             
             while not done and step_count < config.MAX_STEPS_PER_EPISODE:
-                # Get screenshot and game state
                 screenshot = emulator.get_screenshot(format='base64')
                 game_state = emulator.get_game_state()
                 
