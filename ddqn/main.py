@@ -20,11 +20,11 @@ if torch.cuda.is_available():
 else:
     print("CUDA is not available")
 
-ENV_NAME = 'SuperMarioBros-1-1-v0'
-SHOULD_TRAIN = True
+ENV_NAME = 'SuperMarioBros-1-2-v0'
+SHOULD_TRAIN = False
 DISPLAY = True
-CKPT_SAVE_INTERVAL = 5000
-NUM_OF_EPISODES = 50_000
+CKPT_SAVE_INTERVAL = 2500
+NUM_OF_EPISODES = 1000
 
 env = gym_super_mario_bros.make(ENV_NAME, render_mode='human' if DISPLAY else 'rgb', apply_api_compatibility=True)
 env = JoypadSpace(env, RIGHT_ONLY)
@@ -34,8 +34,8 @@ env = apply_wrappers(env)
 agent = Agent(input_dims=env.observation_space.shape, num_actions=env.action_space.n)
 
 if not SHOULD_TRAIN:
-    folder_name = ""
-    ckpt_name = ""
+    folder_name = "2025-06-03-00_35_40"
+    ckpt_name = "model_10000_iter.pt"
     agent.load_model(os.path.join("models", folder_name, ckpt_name))
     agent.epsilon = 0.2
     agent.eps_min = 0.0
