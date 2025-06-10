@@ -63,6 +63,7 @@ state, _ = env.reset()
 clock = pygame.time.Clock()
 
 try:
+    total_reward = 0
     while not done:
         # Handle pygame events
         for event in pygame.event.get():
@@ -77,9 +78,11 @@ try:
             
         # Take action in environment
         state, reward, done, truncated, info = env.step(action)
+        total_reward += reward
         
         # Control frame rate (60 FPS)
         clock.tick(60)
+    print('Total Reward: ', total_reward)
         
 except KeyboardInterrupt:
     print("\nGame interrupted by user")
