@@ -153,3 +153,78 @@ class Lookahead_Agent:
                 continue
             break
         raise AttributeError("Could not find NES core with _x_position")
+
+class Greedy_Agent:
+    def __init__(self, make_sim_env_fn, live_env, num_actions: int):
+        """
+        A depth-1 greedy agent that maximizes immediate reward plus x-position bonus.
+        """
+        self.make_sim_env_fn = make_sim_env_fn
+        self.live_env = live_env
+        self.num_actions = num_actions
+        self.action_history = []
+
+    def record_action(self, action: int):
+        self.action_history.append(action)
+
+    def choose_and_update(self, observation=None):
+        best_score = -np.inf
+        tie_candidates = []
+
+        # Evaluate each possible action a
+        for a in range(self.num_actions):
+            sim = self._make_sim_and_replay_history()
+            nes = self._get_nes_core(sim)
+            x_before = nes._x_position
+
+            _, r, done, trunc, _ = sim.step(a)
+            nes_after = self._get_nes_core(sim)
+            x_after = nes_after._x_position
+
+            if done or trunc or r < 0:
+                score = -np.inf
+            else:
+                score = float(r) + X_BONUS_WEIGHT * (x_after - x_before)
+
+            if score > best_score:
+                best_score = score
+                tie_candidates = [a]
+            elif score == best_score:
+                tie_candidates.append(a)
+
+        # Choose action
+        if best_score == -np.inf:
+            chosen = 0  # NOOP
+        else:
+            chosen = tie_candidates[0]
+
+        # Execute on live env
+        new_state, reward, done, truncated, info = self.live_env.step(chosen)
+        self.record_action(chosen)
+        return new_state, reward, done, truncated, info
+
+    def _make_sim_and_replay_history(self):
+        sim = self.make_sim_env_fn()
+        state, info = sim.reset()
+        for a in self.action_history:
+            state, reward, done, truncated, info = sim.step(a)
+            if done or truncated:
+                break
+        return sim
+
+    def _get_nes_core(self, env):
+        obj = env
+        while True:
+            if hasattr(obj, "_x_position"):
+                return obj
+            if hasattr(obj, "env"):
+                obj = obj.env
+                continue
+            if hasattr(obj, "unwrapped"):
+                inner = obj.unwrapped
+                if inner is obj:
+                    break
+                obj = inner
+                continue
+            break
+        raise AttributeError("Could not find NES core with _x_position")
